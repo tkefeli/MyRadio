@@ -59,3 +59,7 @@ According to power level of broadcasting signal, two noise reduction/blanking sc
 "spectral noise blanking", that was applied on the datas that captured from RTL-SDR before demodulating process, which can be selected the 
 blanking level using --slevel keyword. The second one is "audio noise blanking" scheme that was applied after the modulation, using the --alevel 
 keyword. 
+
+The radio program uses multiprocessing, matplotlib, pyrtlsdr, argparse, numpy, time, collections and sounddevice modules to run and these modules must be 
+exist in the system. This program written under Linux operating system (Mint, Ubuntu) and runs using multiprocessing mechanism, but under windows operating
+system, The "threading" modules can be used instead of "processing" if some error messages arises that related with proccessing mechanism.
