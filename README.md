@@ -1,7 +1,7 @@
 # MyRadio
 The RTL-SDR command line radio application for python3. 
-This the simple radio program written in python (version 3.xx) to listen to radio brocasts HF band and FM band. 
-The program uses a RTL-SDR dongle (at this time only RTL-SDR, because I don't have anyting else) to capture signals that come
+This the simple radio program written in python (version 3.xx) to listen to radio broadcasts HF band and FM band. 
+The program uses a RTL-SDR dongle (at this time only RTL-SDR) to capture signals that come
 from a passive loop antenna (which is sold from RTL-SDR site). There is no GUI right now, however the important parameters can be 
 adjusted using command line parameters. 
 
@@ -39,11 +39,11 @@ options:
   
   --alevel ALEVEL       Audio noise blanking level, default: 0
   
-  --spectrum            Enable spectrum view, default: disable
+  --spectrum            Enable spectrum view, default: disabled
   
-  --waterfall           Enable waterfall view, default: disable
+  --waterfall           Enable waterfall view, default: disabled
   
-  --noagc               Disable RTL-SDR AGC, default: enabled
+  --noagc               Disable RTL-SDR AGC, default: disabled
   
   --nfft NFFT           The number of FFT Samples, default: 1024
   
@@ -55,11 +55,11 @@ Only two parameters needed to specify in order to run the radio program. The cen
 type of signal. The live spectrum and waterfall graphics can be seen using --spectrum and --waterfall keywords. The graphics are constructed
 using matplotlib library. 
 
-According to power level of broadcasting signal, two noise reduction/blanking scheme were applied on the demodulated signal. The first one is 
-"spectral noise blanking", that was applied on the datas that captured from RTL-SDR before demodulating process, which can be selected the 
-blanking level using --slevel keyword. The second one is "audio noise blanking" scheme that was applied after the modulation, using the --alevel 
+According to power level of broadcasting signal, two noise reduction/blanking scheme are applied on the demodulated signal. The first one is 
+"spectral noise blanking", that is applied on the datas that captured from RTL-SDR before demodulating process, which can be selected the 
+blanking level using --slevel keyword. The second one is "audio noise blanking" scheme that is applied after the modulation, using the --alevel 
 keyword. 
 
-The radio program uses multiprocessing, matplotlib, pyrtlsdr, argparse, numpy, time, collections and sounddevice modules to run, and these modules must be 
-exist in the system. This program written under Linux operating system (Mint, Ubuntu) and runs using multiprocessing mechanism, but under windows operating
-system, The "threading" modules can be used instead of "processing" if some error messages arises that related with processing mechanism.
+The radio program uses multiprocessing, matplotlib, pyrtlsdr, argparse, numpy, time, collections and sounddevice python modules to run. 
+This program has been written under Linux operating system (Mint, Ubuntu) and runs using multiprocessing mechanism, but under windows operating
+system, The "threading" modules can be used instead of "processing" if some error messages arise that related with processing mechanism.
