@@ -2,14 +2,39 @@
 # -*- coding: utf-8 -*-
 
 """
+05/08/2023: * Hem FM hem de AM için tek paket ile demodülasyon, ses üzerinde pıtırcıklar yaratıyor.
+              Bunu ancak 3 paket alarak düzeltebiliyorum. Bunun kötü tarafı ise demodülasyon
+              işlerinin normale göre 3 kat daha fazla sürmesi ve "buffer-underrun" sorununun geri gelmesi.
+              pythran ile hızlandırmak mümkün olsa bile bazı sınırlamalar mevcut. Bunlardan biri
+              pythran'ın scipy ile ilgisinin olmaması. Numpy kütüphanaleri pythran tarafından
+              desteklense de benim örneğimde pythran, numpy kütüphanesinin "select" fonksiyonunu
+              derleyemedi. Oysa manualinde desteklenen numpy fonksiyonlarında o da vardı.
+              
+02/08/2023: * asyncio kullanan yeni "Streaming" eklendi. Böylece ses kartından "buffer-underrun"
+              hatası artık gelmiyor. Öte yandan sesteki "pıtırcıklanmalar" da az biraz iyileşti,
+              ama tamamen düzelmedi, hala var..
+
+28/08/2023: * "get_sample_points" eklendi.
+            * "decimation_factor" ve "chunk_size" hesaplamaları düzeltildi.
+            * 3 parça veri almak yerine tek parça veriden demodülasyon yapılıyor. Sesler "pıtırcıklı" çıkıyor.
+              Ancak sesteki "pıtırcıklanmalar" az biraz iyileşti ama tamamen düzelmiyor..
+            
+27/07/2023: * İlk defa pythran ile derlenmiş bir FM demodülatör fonksiyonu kullanıldı.
+
+26/07/2023: * "spektral filtreleme" için yapılan işlemler "np.select" ile 
+              daha da sadeleştirildi.
+            * "data" dizisinde eleman kaydırma "slicing" yerine "np.roll" 
+              kullanılarak yapıldı. Tüm bunların sonucunda %50 kadar hızlanma
+              elde edildi. 
+
 22/04/2023: * Tuner gain eklendi.
             * FM Demodülatör düzeltildi.
             * Eksenlerin fontları değiştirildi.
 
-19/04/2023: * Sürekli LineCollection eklenmesi sonucu oluşan memeory-leak çözüldü.
+19/04/2023: * Sürekli LineCollection eklenmesi sonucu oluşan memory-leak çözüldü.
             * waterfall için spektrumların ortalaması kullanıldı. Olması gereken buydu.
-            * Spektrumda kırmızı marker ölçklendirme yapınca kayboluyordu, onu animasyon
-              içerisine alınca memeory-leak durumu olmasın diye iki kez "collection"
+            * Spektrumda kırmızı marker ölçeklendirme yapınca kayboluyordu, onu animasyon
+              içerisine alınca memory-leak durumu olmasın diye iki kez "collection"
               dizisinden veri silindi, sorun çözüldü.
             * waterfall grafiklerinin performansı deque kullanılarak iyileştirildi.
             * spektrumda alınan fft'nin daha düzgün sonuçlar vermesi için windowlama fonksiyonu eklendi.
@@ -18,7 +43,7 @@
             * Grafiklere kırmızı merkez çizgileri eklendi.
             * waterfall_buffer_size değişkeni eklendi (yerel buffer_size yerine)
 
-15/04/2023: * Program çalıştırılabir (chmod +x) şekilde düzenlendi.
+15/04/2023: * Program çalıştırılabilir (chmod +x) şekilde düzenlendi.
             * fft örnek sayısı da giriş argümanlarına eklendi.
 
 14/04/2023: * Varsayılan değerler değiştirildi. (sampling-rate, bandwidth, dsize..)
@@ -35,6 +60,8 @@ import argparse, multiprocessing
 import numpy as np
 import multiprocessing as mp
 from collections import deque
+import scipy.signal as s
+import demodulate_fm_ran
 
 parser = argparse.ArgumentParser(description='Simple radio program using RTL-SDR')
 parser.add_argument('--frequency', dest='freq', type=float, help='RF tune frequency', required=True)
@@ -61,7 +88,7 @@ class MyRadio():
         self.qsdr = mp.Queue(1)
         self.qdemod = mp.Queue()        
         self.qvisual = mp.Queue(1)
-        self.qstatus = mp.Queue(1)
+        self.qstatus = mp.Queue()
         self.event = mp.Event()
                        
         # Giriş parametreleri burada..
@@ -88,9 +115,10 @@ class MyRadio():
         self.parameters = {"u":self.vol_up, "d":self.vol_down, "p":self.prev_tune, "n":self.next_tune}
         
         # Desimasyon ve demodülasyon parametreleri burda..
-        self.decimation_factor = self.srate//self.arate # Bu resampling faktörü olacak. srate'den arate'e resample için.
-        self.chunk_size = self.dsize//self.decimation_factor # Bu ses kartına tek seferde gidecek olan veri miktarı.
-        self.buffer_size = self.dsize*3
+        self.decimation_factor = int(np.rint(self.srate/self.arate))# Bu resampling faktörü olacak. srate'den arate'e resample için.
+        self.chunk_size = int(np.rint(self.arate*(self.dsize/self.srate))) # Bu ses kartına tek seferde gidecek olan veri miktarı.
+        self.packages = 3 # Verilerin kaçlı paketler halinde alınacağını belirler. 
+        self.buffer_size = self.dsize*self.packages
         self.f_low = 10
         self.f_high = self.bw
 
@@ -119,9 +147,9 @@ class MyRadio():
     # Prosesler burada çalıştırılıyor..
     def start_processes(self):
         self.streaming_process.start()
-        self.demodulator_process.start(),
-        if self.spectrum: self.visual_process.start()
-        sleep(1)
+        self.demodulator_process.start()
+        sleep(0.2)
+        if self.spectrum: self.visual_process.start()        
         self.audio_process.start()
     
     # Radio burada durdurulur..
@@ -140,17 +168,33 @@ class MyRadio():
         mask[lenght//2-high_f:lenght//2+high_f] = 1
         mask[lenght//2-low_f:lenght//2+low_f] = 0
         return mask
+    # Spektral (frekans domeninde) filtre oluşturma.. ikinci tip..
+    def create_filter_mask2(self, f_low, f_high, lenght, rate):
+        mask = np.zeros(lenght)
+        mid = lenght//2
+        low_f = int((f_low*lenght)//rate)
+        high_f = int((f_high*lenght)//rate)
+        mask[lenght//2-high_f:lenght//2+high_f] = 1
+        mask[lenght//2-low_f:lenght//2+low_f] = 0
+        return np.concatenate([mask[mid:], mask[:mid]])
     
-    # Audio domeminde gürültü azaltma algoritması..
+    # Eğer basit "slicing" olmuyorsa bunu kullan.. 
+    def get_sample_points(self, lenght, slicing_factor):
+        return np.array([int(np.rint(i*slicing_factor)) for i in range(lenght)])
+
+# Audio domeminde gürültü azaltma algoritması..
     def audio_spectral_subtraction(self, signal, level=0, block_dc=True):      
-        level = level*np.ones(len(signal))
+        # level = level*np.ones(len(signal))
         specs = np.fft.fft(signal)
         if block_dc: specs[0] = 0
-        amplitudes = np.abs(specs)
-        phases = np.exp(1j*np.angle(specs))
-        diff = np.maximum(amplitudes-level, 0)
-        recovered = np.fft.ifft(diff*phases).real        
-        return recovered
+        # amplitudes = np.abs(specs)
+        # phases = np.exp(1j*np.angle(specs))
+        # diff = np.maximum(amplitudes-level, 0)
+        # recovered = np.fft.ifft(diff*phases).real        
+        # return recovered
+    
+        specs = np.select([abs(specs)>level], [specs])
+        return np.fft.ifft(specs).real
 
     # Spectrum ve waterfall verisi burada işleniyor..
     def Spectrum_and_waterfall(self):
@@ -224,89 +268,65 @@ class MyRadio():
         if self.waterfall:
             wfall_ani = FuncAnimation(fig, generate_waterfall, blit=True, interval=interval, cache_frame_data=False) # plt.gcf() de dönebilir.
         plt.show()
-   
-    # RTL-SDR'den veri okunup kuyruğa yazılır. Eğer spectrum da gösterilecekse aynı veri başka
-    # bir kuyruğa daha yazılır.
+
+
+# Steaming burada yapılıyor. Python 3.5+ versiyonlarında olan asyncio modülü kullanılarak yapılan bu
+# işlemde RTL-SDR'den örneklenem verilen otomatik olarak bir "callback" fonksiyonu ile kuyruğa yazılıyor.
+# Öte yandan eski fonksiyon da (normal while, read_samples döngüsü olan) aynı performansta çalışıyordu. 
     def Streaming(self):
+        import asyncio
         if self.freq > 28000000:
             self.sdr.set_direct_sampling(0)
         else:
             self.sdr.set_direct_sampling(2)
-        
-        try:
-            while True:
-                data = self.sdr.read_samples(self.dsize)
-                if self.qsdr.empty():
-                    self.qsdr.put(data)
-                if self.spectrum:
-                    if self.qvisual.empty(): self.qvisual.put(data)
                 
-        except:
-            self.sdr.close()
-            print("streamingde sıkıntı çıktı !")
+        async def async_streaming():
+            async for samples in self.sdr.stream(num_samples_or_bytes=self.dsize, format="samples", loop=None):                              
+                self.qsdr.put(samples)                              
+                if self.spectrum:
+                    if self.qvisual.empty(): self.qvisual.put(samples)
+                        
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(async_streaming())
+        print("streamingde sıkıntı çıktı !")
 
     # Demodülasyon kısmı buradan başlıyor..
-    def Demodulation(self):        
-        
+    def Demodulation(self):                
     #     AM Demodülasyon kısmı...
         if self.mod == "AM":
             print("modulation type: AM")        
-            mask = self.create_filter_mask(self.f_low, self.f_high, self.buffer_size, self.srate)
-            data1 = self.qsdr.get()
-            data2 = self.qsdr.get()
-            data3 = self.qsdr.get() 
-            data = np.array([data1, data2, data3])
+            mask = self.create_filter_mask2(self.f_low, self.f_high, self.buffer_size, self.srate)
+            data = np.zeros(self.buffer_size, dtype=np.complex128).reshape(self.packages, self.dsize)
             while True:
-                if not self.qsdr.empty():
-                    x = self.qsdr.get()*self.volume # Burada artık kazanç değeri dışarıdan verilebiliyor. 
-                    data[-1] = x    
-                    flat_data = data.flatten()                                     
-                    z = np.fft.fftshift(np.fft.fft(flat_data))
-                    z = z*mask
-                    if self.slevel:
-                        angles = np.angle(z)
-                        amplitudes = abs(z)
-                        z = np.maximum(amplitudes-self.slevel, 0)
-                        z = z*np.exp(1j*angles)
-                    filtered = np.fft.ifft(np.fft.ifftshift(z))
-                    resampled = filtered[::self.decimation_factor]
-                    demod = abs(resampled)
-                    avg = np.mean(demod)
-                    demod -= avg
-                    if self.alevel:                    
-                        demod = self.audio_spectral_subtraction(demod, level=self.alevel, block_dc=True)
-                    demod = demod[self.chunk_size:2*self.chunk_size]
-                    self.qdemod.put(demod.astype(np.float32))                
-                    data[:-1] = data[1:]
-                    
+                x = self.qsdr.get()*self.volume # Burada artık kazanç değeri dışarıdan verilebiliyor. 
+                data[-1] = x                                                        
+                z = np.fft.fft(data.flatten())*mask
+                if self.slevel:
+                    z = np.select([abs(z)>self.slevel], [z])
+                filtered = np.fft.ifft(z)
+                resampled = s.resample(filtered, self.chunk_size*self.packages)
+                demod = abs(resampled)
+                demod -= np.mean(demod)
+                if self.alevel:                    
+                    demod = self.audio_spectral_subtraction(demod, level=self.alevel, block_dc=True)
+                demod = demod[self.chunk_size:2*self.chunk_size]
+                self.qdemod.put(demod.astype(np.float32))                
+                # data[:-1] = data[1:]
+                data = np.roll(data, -self.dsize)
     #     FM Demodülasyon kısmı..            
         if self.mod == "FM":
             print("modulation type: FM")            
-            mask1 = self.create_filter_mask(self.f_low, 80000, self.buffer_size, self.srate)
-            mask2 = self.create_filter_mask(self.f_low, self.bw, self.buffer_size, self.srate)
-            data1 = self.qsdr.get()
-            data2 = self.qsdr.get()
-            data3 = self.qsdr.get() 
-            data = np.array([data1, data2, data3])
-            initial = 0
+            mask1 = self.create_filter_mask2(0, 80000, self.buffer_size, self.srate)
+            mask2 = self.create_filter_mask2(self.f_low, self.bw, self.buffer_size, self.srate)           
+            initial = complex(0,0)
+            data = np.zeros(self.buffer_size, dtype=np.complex128).reshape(self.packages, self.dsize)
             while True:
-                x = self.qsdr.get()            
-                data[-1] = x
-                flat_data = data.flatten()                                     
-                z1 = np.fft.fftshift(np.fft.fft(flat_data))
-                z1 = z1*mask1 # FM Braadcast kanal için ilk filtreleme.. 
-                filtered1 = np.fft.ifft(np.fft.ifftshift(z1)) # Reconstruction yapıldı. Şimdi demodüle edilip yeniden filtrelenecek..
-                t = np.insert(filtered1, 0, initial)
-                demod = 0.5 * np.angle(t[0:-1] * np.conj(t[1:])) # Burada zaman domeninde demodüle edildi.
-                z2 = np.fft.fftshift(np.fft.fft(demod))
-                z2 = z2*mask2 # Burada (L+R)'nin bulunduğu ilk 15 kHz'lik band filtrelenir.
-                filtered2 = np.fft.ifft(np.fft.ifftshift(z2)) # Bilgi işareti reconstruct edildi.
-                resampled = filtered2[0::self.decimation_factor]        
-                resampled = resampled[self.chunk_size:2*self.chunk_size]
-                data[:-1] = data[1:]
-                initial = demod[-1]
+                x = self.qsdr.get() 
+                filtered, data, initial = demodulate_fm_ran.demodulate_fm_without_resample_triple(x, data, mask1, mask2, initial)
+                resampled = s.resample(filtered, self.chunk_size*self.packages)
+                resampled = resampled[self.chunk_size:2*self.chunk_size]                
                 self.qdemod.put(resampled.real.astype(np.float32))
-        
+                
     # Ses kartına veri gönderen program burada..
     def Sound(self):
         import sounddevice as sd
@@ -342,14 +362,14 @@ if __name__ == "__main__":
     radio = MyRadio()
     radio.start()
     import os
-    os.system("clear")
+#     os.system("clear")
     banner = (f'{"   MY RADIO   ":*^80}\n'
               f'{"* Frequency":<20} {1e-6*radio.freq:>10.03f} MHz\n'
               f'{"* Sampling rate":<20} {1e-3*radio.srate:>10.0f} kSps\n'
               f'{"* Bandwidth":<20} {1e-3*radio.bw:>10.0f} kHz\n'
               f'{"* FFT Size":<20} {radio.fft_size:>10.0f} Sample\n'
               f'{"* RTL-SDR AGC":<20} {"ON" if not radio.noagc else "OFF":>10}\n'
-              f'{"* Tuner Gain":<20} {radio.sdr.get_gain():>10.1f}\n'
+              f'{"* Tuner Gain":<20} {radio.sdr.get_gain():>10.1f}\n'              
               )
     print(banner)        
     print("press esc+enter for quit ..\n")
