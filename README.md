@@ -63,3 +63,14 @@ keyword.
 The radio program uses multiprocessing, matplotlib, pyrtlsdr, argparse, numpy, time, collections and sounddevice python modules to run. 
 This program has been written under Linux operating system (Mint, Ubuntu) and runs using multiprocessing mechanism, but under windows operating
 system, The "threading" modules can be used instead of "processing" if some error messages arise that related with processing mechanism.
+
+Not: I've forgotten to include the library file required for the FM demodulation, beginning with "demodulate_rm_ran". This file is built using
+"pythran". Simply download the demodulate_fm_ran.py file and compile the file with the command below:
+
+pythran demodulate_fm_ran
+
+This command generates the required library. The name of the genarated file begins with "demodulate_rm_ran" and a long string behind of its name.
+Do not change the file name including the extension, simply copy the generated file to the same folder with the MyRadio_class.py file.
+
+In order to run MyRadio_class.py file, you need numpy, scipy, matplotlib, pyrtlsdr (for python), librtlsdr (pyrtlsdr library calls this library) and
+pythran packages.
